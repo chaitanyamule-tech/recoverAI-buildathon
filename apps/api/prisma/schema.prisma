@@ -1,0 +1,297 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TransactionStatus {
+  CREATED
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+  ABANDONED
+}
+
+enum PaymentMethod {
+  UPI
+  CARD
+  NETBANKING
+  WALLET
+  OTHER
+}
+
+enum RecoveryCaseStatus {
+  DETECTED
+  ANALYZING
+  DIAGNOSED
+  PLANNED
+  PENDING_POLICY
+  APPROVED
+  EXECUTING
+  RECOVERED
+  ESCALATED
+  STOPPED
+  FAILED
+}
+
+enum RecoveryActionType {
+  RETRY_PAYMENT
+  SEND_REMINDER
+  OFFER_ALTERNATIVE_METHOD
+  WAIT
+  ESCALATE
+  STOP
+}
+
+enum RecoveryActionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXECUTING
+  SUCCESS
+  FAILED
+}
+
+enum AuditActor {
+  AI
+  SYSTEM
+  HUMAN
+  MERCHANT
+}
+
+enum WebhookProcessingStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+model Merchant {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customers      Customer[]
+  transactions   Transaction[]
+  policies       Policy[]
+  recoveryCases  RecoveryCase[]
+  auditLogs      AuditLog[]
+  webhookEvents  WebhookEvent[]
+  evaluationRuns EvaluationRun[]
+}
+
+model Customer {
+  id                 String   @id @default(cuid())
+  merchantId         String
+  name               String
+  email              String?
+  phone              String?
+  totalPayments      Int      @default(0)
+  successfulPayments Int      @default(0)
+  failedPayments     Int      @default(0)
+  totalSpent         Decimal  @default(0) @db.Decimal(14, 2)
+  metadata           Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  merchant     Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([merchantId])
+  @@index([merchantId, createdAt])
+}
+model Transaction {
+  id            String            @id @default(cuid())
+  merchantId    String
+  customerId    String
+  externalId    String?
+  amount        Decimal           @db.Decimal(14, 2)
+  currency      String            @default("INR")
+  paymentMethod PaymentMethod
+  status        TransactionStatus
+  failureReason String?
+  description   String?
+  metadata      Json?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  merchant        Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  customer        Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  paymentAttempts PaymentAttempt[]
+  recoveryCase    RecoveryCase?
+
+  @@index([merchantId])
+  @@index([customerId])
+  @@index([externalId])
+  @@index([status])
+  @@index([paymentMethod])
+  @@index([createdAt])
+  @@index([merchantId, status, createdAt])
+}
+
+model PaymentAttempt {
+  id             String            @id @default(cuid())
+  transactionId  String
+  attemptNumber  Int
+  attemptType   String            @default("INITIAL")
+  status         TransactionStatus
+  failureReason  String?
+  paymentMethod  PaymentMethod
+  externalId     String?
+  createdAt      DateTime          @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+  @@index([transactionId, attemptNumber])
+  @@index([transactionId, attemptType])
+}
+
+model RecoveryCase {
+  id                  String             @id @default(cuid())
+  merchantId          String
+  transactionId       String             @unique
+  riskScore           Float
+  recoveryProbability Float
+  expectedRecovery    Decimal            @db.Decimal(14, 2)
+  recoveredAmount     Decimal            @default(0) @db.Decimal(14, 2)
+  status              RecoveryCaseStatus
+  diagnosis           String?
+  diagnosisConfidence Float?
+  recommendedAction   RecoveryActionType?
+  escalationReason    String?
+  stopReason          String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  merchant    Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  transaction Transaction      @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  decisions   AgentDecision[]
+  actions     RecoveryAction[]
+  auditLogs   AuditLog[]
+
+  @@index([merchantId])
+  @@index([status])
+  @@index([merchantId, status, createdAt])
+  @@index([createdAt])
+}
+
+model AgentDecision {
+  id             String   @id @default(cuid())
+  recoveryCaseId String
+  decision       RecoveryActionType
+  confidence     Float
+  reasoning      String
+  evidence       Json?
+  model          String?
+  createdAt      DateTime @default(now())
+
+  recoveryCase RecoveryCase @relation(fields: [recoveryCaseId], references: [id], onDelete: Cascade)
+
+  @@index([recoveryCaseId])
+  @@index([createdAt])
+}
+
+model RecoveryAction {
+  id             String              @id @default(cuid())
+  recoveryCaseId String
+  actionType     RecoveryActionType
+  status         RecoveryActionStatus
+  attemptNumber  Int?
+  amount         Decimal?            @db.Decimal(14, 2)
+  result         Json?
+  rejectionReason String?
+  executedAt     DateTime?
+  createdAt      DateTime            @default(now())
+
+  recoveryCase RecoveryCase @relation(fields: [recoveryCaseId], references: [id], onDelete: Cascade)
+
+  @@index([recoveryCaseId])
+  @@index([status])
+  @@index([actionType])
+  @@index([createdAt])
+}
+
+model Policy {
+  id                         String   @id @default(cuid())
+  merchantId                 String
+  name                       String
+  maxAutomaticRetryAttempts  Int      @default(2)
+  maxAutomaticRecoveryAmount Decimal  @default(10000) @db.Decimal(14, 2)
+  manualApprovalAmount       Decimal  @default(25000) @db.Decimal(14, 2)
+  maxCustomerActionsPerDay   Int      @default(3)
+  cooldownMinutes            Int      @default(30)
+  active                     Boolean  @default(true)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@index([merchantId, active])
+}
+
+model AuditLog {
+  id             String      @id @default(cuid())
+  merchantId     String
+  recoveryCaseId String?
+  eventType      String
+  actor          AuditActor
+  action         String?
+  status         String?
+  metadata       Json?
+  createdAt      DateTime    @default(now())
+
+  merchant     Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  recoveryCase RecoveryCase? @relation(fields: [recoveryCaseId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@index([recoveryCaseId])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+model WebhookEvent {
+  id          String                  @id @default(cuid())
+  merchantId  String
+  eventId     String                  @unique
+  eventType   String
+  payload     Json
+  status      WebhookProcessingStatus @default(RECEIVED)
+  processedAt DateTime?
+  createdAt   DateTime                @default(now())
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model EvaluationRun {
+  id                    String   @id @default(cuid())
+  merchantId            String
+  name                  String
+  datasetSize           Int
+  baselineAtRisk        Decimal  @db.Decimal(14, 2)
+  recoverAiAtRisk       Decimal  @db.Decimal(14, 2)
+  baselineRecovered     Decimal  @db.Decimal(14, 2)
+  recoverAiRecovered    Decimal  @db.Decimal(14, 2)
+  baselineRecoveryRate  Float
+  recoverAiRecoveryRate Float
+  unnecessaryActions    Int      @default(0)
+  policyViolations      Int      @default(0)
+  manualEscalations     Int      @default(0)
+  startedAt             DateTime @default(now())
+  completedAt           DateTime?
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@index([startedAt])
+}

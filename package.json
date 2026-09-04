@@ -1,0 +1,17 @@
+{
+  "name": "recoverai",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "type": "module",
+  "scripts": {
+    "generate:customers": "node scripts/generate-customers.js",
+    "generate:transactions": "node scripts/generate-transactions.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
